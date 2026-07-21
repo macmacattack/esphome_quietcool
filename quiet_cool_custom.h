@@ -25,15 +25,21 @@ const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
-  // Use native ESP-IDF GPIO types
+  // Native ESP-IDF Pin Assignments
   gpio_num_t gdo0_pin = GPIO_NUM_2;
   gpio_num_t gdo2_pin = GPIO_NUM_4;
+  gpio_num_t cs_pin   = GPIO_NUM_1; // We now handle the CS pin natively too!
 
   // Your baked-in Remote ID
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
-    // Initialize pins natively using ESP-IDF
+    // Initialize CS pin natively
+    gpio_reset_pin(this->cs_pin);
+    gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(this->cs_pin, 1); // CS is active LOW, so start HIGH
+
+    // Initialize GDO pins natively
     gpio_reset_pin(this->gdo0_pin);
     gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->gdo0_pin, 0);
@@ -47,22 +53,28 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   }
 
   void write_reg(uint8_t addr, uint8_t value) {
-    this->enable();
+    this->enable(); // Lock SPI bus
+    gpio_set_level(this->cs_pin, 0); // Assert CS
     this->write_byte(addr);
     this->write_byte(value);
-    this->disable();
+    gpio_set_level(this->cs_pin, 1); // De-assert CS
+    this->disable(); // Unlock SPI bus
   }
 
   void write_strobe(uint8_t strobe) {
     this->enable();
+    gpio_set_level(this->cs_pin, 0); 
     this->write_byte(strobe);
+    gpio_set_level(this->cs_pin, 1);
     this->disable();
   }
 
   uint8_t read_reg(uint8_t addr) {
     this->enable();
+    gpio_set_level(this->cs_pin, 0);
     this->write_byte(addr | 0x80);
     uint8_t val = this->read_byte();
+    gpio_set_level(this->cs_pin, 1);
     this->disable();
     return val;
   }
