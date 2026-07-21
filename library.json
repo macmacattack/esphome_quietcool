@@ -1,0 +1,6 @@
+{
+  "name": "esphome_quietcool",
+  "version": "1.0.0",
+  "description": "Native ESP-IDF C++ Port for QuietCool Hub",
+  "frameworks": ["esp-idf"]
+}
