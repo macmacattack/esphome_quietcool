@@ -4,6 +4,7 @@
 #include "esphome/core/component.h"
 #include "esphome/components/spi/spi.h"
 #include "esphome/core/hal.h"
+#include "driver/gpio.h" // Native ESP-IDF GPIO Drivers
 
 namespace esphome {
 namespace quiet_cool {
@@ -24,21 +25,22 @@ const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
-  GPIOPin *gdo0_pin{nullptr};
-  GPIOPin *gdo2_pin{nullptr};
+  // Use native ESP-IDF GPIO types
+  gpio_num_t gdo0_pin = GPIO_NUM_2;
+  gpio_num_t gdo2_pin = GPIO_NUM_4;
 
   // Your baked-in Remote ID
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
-    if (this->gdo0_pin != nullptr) {
-      this->gdo0_pin->setup();
-      this->gdo0_pin->digital_write(false);
-    }
-    if (this->gdo2_pin != nullptr) {
-      this->gdo2_pin->setup();
-      this->gdo2_pin->digital_write(false);
-    }
+    // Initialize pins natively using ESP-IDF
+    gpio_reset_pin(this->gdo0_pin);
+    gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(this->gdo0_pin, 0);
+
+    gpio_reset_pin(this->gdo2_pin);
+    gpio_set_direction(this->gdo2_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(this->gdo2_pin, 0);
 
     this->spi_setup();
     this->init_cc1101();
@@ -103,7 +105,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
-        this->gdo0_pin->digital_write((b >> bit) & 1);
+        gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
         delayMicroseconds(415); // ESP-IDF safe timing
       }
     }
@@ -124,7 +126,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     ESP_LOGD("quiet_cool", "Transmitting Dynamic Payload. CMD: 0x%02X", cmd_byte);
 
     for (int i = 0; i < 3; i++) {
-      this->gdo0_pin->digital_write(false);
+      gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // STX (Enter TX mode)
       
       this->send_byte_array(packet, 20);
