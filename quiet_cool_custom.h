@@ -8,36 +8,27 @@
 namespace esphome {
 namespace quiet_cool {
 
-// Command lookup table pulled from quietcool.cpp
-static const char *const SPEED_SETTINGS[] = {
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100100110011001100110000", // PRE (0)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000110110001000", // H1 (1)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011001010110010000", // H2 (2)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011010010110100000", // H4 (3)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011100010111000000", // H8 (4)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011110010111100000", // H12 (5)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011111110111111000", // HON (6)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000010110000000", // HOFF (7)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000110100001000", // M1 (8)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010001010100010000", // M2 (9)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010010010100100000", // M4 (10)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010100010101000000", // M8 (11)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010110010101100000", // M12 (12)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010111110101111000", // MON (13)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000010100000000", // MOFF (14)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000110010001000", // L1 (15)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001001010010010000", // L2 (16)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001010010010100000", // L4 (17)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001100010011000000", // L8 (18)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001110010011100000", // L12 (19)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001111110011111000", // LON (20)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000010010000000", // LOFF (21)
-};
+// Speed Command Bytes
+const uint8_t SPEED_HIGH   = 0xB0;
+const uint8_t SPEED_MEDIUM = 0xA0;
+const uint8_t SPEED_LOW    = 0x90;
+
+// Duration Command Bytes
+const uint8_t DUR_OFF = 0x00;
+const uint8_t DUR_1H  = 0x01;
+const uint8_t DUR_2H  = 0x02;
+const uint8_t DUR_4H  = 0x04;
+const uint8_t DUR_8H  = 0x08;
+const uint8_t DUR_12H = 0x0C;
+const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
   GPIOPin *gdo0_pin{nullptr};
   GPIOPin *gdo2_pin{nullptr};
+
+  // Your baked-in Remote ID
+  uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
     if (this->gdo0_pin != nullptr) {
@@ -79,7 +70,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     delay(10);
 
     uint8_t ver = this->read_reg(0xF1);
-    ESP_LOGI("quiet_cool", "CC1101 Chip Version Register: 0x%02X", ver);
+    ESP_LOGI("quiet_cool", "CC1101 Chip Version: 0x%02X", ver);
 
     // CC1101 Configuration Registers (433.897 MHz, 2-FSK, Direct Async Mode)
     this->write_reg(0x00, 0x29); // IOCFG2
@@ -108,50 +99,46 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     ESP_LOGI("quiet_cool", "Native CC1101 setup complete.");
   }
 
-  void send_bits(const char *data, size_t len) {
+  void send_byte_array(const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; i++) {
-      bool bit = (data[i] == '1');
-      this->gdo0_pin->digital_write(bit);
-      delayMicroseconds(415); // ESP-IDF safe timing (Interrupts remain enabled!)
+      uint8_t b = data[i];
+      for (int bit = 7; bit >= 0; bit--) {
+        this->gdo0_pin->digital_write((b >> bit) & 1);
+        delayMicroseconds(415); // ESP-IDF safe timing
+      }
     }
   }
 
-  void send_raw(const char *data, size_t len) {
-    if (len == 0) return;
+  void transmit_command(uint8_t speed, uint8_t duration) {
+    uint8_t cmd_byte = speed | duration;
+    
+    // Dynamically build the 20-byte RF payload
+    uint8_t packet[20] = {
+      0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // 9 bytes of Preamble/Sync
+      remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
+      remote_id[4], remote_id[5], remote_id[6],             // 7 bytes of User Remote ID
+      cmd_byte, cmd_byte,                                   // 2 bytes of Command
+      0x00, 0x00                                            // 2 bytes of Padding
+    };
 
-    ESP_LOGD("quiet_cool", "Transmitting %zu bits...", len);
-
-    this->gdo0_pin->digital_write(false);
-    this->write_strobe(0x35); // STX (Enter TX mode)
-
-    const char *preamble = "00";
-    this->send_bits(preamble, 2);
-    this->send_bits(data, len);
-
-    this->write_strobe(0x36); // SIDLE
-    delay(10);
-  }
-
-  void transmit_command(int index) {
-    if (index < 0 || index >= 22) {
-      ESP_LOGE("quiet_cool", "Invalid command index: %d", index);
-      return;
-    }
-
-    const char *cmd = SPEED_SETTINGS[index];
-    size_t len = strlen(cmd);
+    ESP_LOGD("quiet_cool", "Transmitting Dynamic Payload. CMD: 0x%02X", cmd_byte);
 
     for (int i = 0; i < 3; i++) {
-      this->send_raw(cmd, len);
-      delay(18); // Yields to FreeRTOS tasks & Watchdog Timer!
+      this->gdo0_pin->digital_write(false);
+      this->write_strobe(0x35); // STX (Enter TX mode)
+      
+      this->send_byte_array(packet, 20);
+
+      this->write_strobe(0x36); // SIDLE
+      delay(18); // Yields to FreeRTOS tasks & Watchdog Timer
     }
   }
 
-  // Quick helper methods for Home Assistant automations
-  void turn_off() { this->transmit_command(7); }         // HOFF
-  void turn_on_high() { this->transmit_command(6); }     // HON
-  void turn_on_medium() { this->transmit_command(13); }  // MON
-  void turn_on_low() { this->transmit_command(20); }     // LON
+  // Home Assistant Helpers
+  void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
+  void turn_on_high() { this->transmit_command(SPEED_HIGH, DUR_ON); }
+  void turn_on_medium() { this->transmit_command(SPEED_MEDIUM, DUR_ON); }
+  void turn_on_low() { this->transmit_command(SPEED_LOW, DUR_ON); }
 };
 
 }  // namespace quiet_cool
