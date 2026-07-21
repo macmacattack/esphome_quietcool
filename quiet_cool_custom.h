@@ -1,0 +1,158 @@
+#pragma once
+
+#include "esphome.h"
+#include "esphome/core/component.h"
+#include "esphome/components/spi/spi.h"
+#include "esphome/core/hal.h"
+
+namespace esphome {
+namespace quiet_cool {
+
+// Command lookup table pulled from quietcool.cpp
+static const char *const SPEED_SETTINGS[] = {
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100100110011001100110000", // PRE (0)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000110110001000", // H1 (1)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011001010110010000", // H2 (2)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011010010110100000", // H4 (3)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011100010111000000", // H8 (4)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011110010111100000", // H12 (5)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011111110111111000", // HON (6)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000010110000000", // HOFF (7)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000110100001000", // M1 (8)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010001010100010000", // M2 (9)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010010010100100000", // M4 (10)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010100010101000000", // M8 (11)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010110010101100000", // M12 (12)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010111110101111000", // MON (13)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000010100000000", // MOFF (14)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000110010001000", // L1 (15)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001001010010010000", // L2 (16)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001010010010100000", // L4 (17)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001100010011000000", // L8 (18)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001110010011100000", // L12 (19)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001111110011111000", // LON (20)
+    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000010010000000", // LOFF (21)
+};
+
+class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
+ public:
+  GPIOPin *gdo0_pin{nullptr};
+  GPIOPin *gdo2_pin{nullptr};
+
+  void setup() override {
+    if (this->gdo0_pin != nullptr) {
+      this->gdo0_pin->setup();
+      this->gdo0_pin->digital_write(false);
+    }
+    if (this->gdo2_pin != nullptr) {
+      this->gdo2_pin->setup();
+      this->gdo2_pin->digital_write(false);
+    }
+
+    this->spi_setup();
+    this->init_cc1101();
+  }
+
+  void write_reg(uint8_t addr, uint8_t value) {
+    this->enable();
+    this->write_byte(addr);
+    this->write_byte(value);
+    this->disable();
+  }
+
+  void write_strobe(uint8_t strobe) {
+    this->enable();
+    this->write_byte(strobe);
+    this->disable();
+  }
+
+  uint8_t read_reg(uint8_t addr) {
+    this->enable();
+    this->write_byte(addr | 0x80);
+    uint8_t val = this->read_byte();
+    this->disable();
+    return val;
+  }
+
+  void init_cc1101() {
+    this->write_strobe(0x30); // SRES Reset
+    delay(10);
+
+    uint8_t ver = this->read_reg(0xF1);
+    ESP_LOGI("quiet_cool", "CC1101 Chip Version Register: 0x%02X", ver);
+
+    // CC1101 Configuration Registers (433.897 MHz, 2-FSK, Direct Async Mode)
+    this->write_reg(0x00, 0x29); // IOCFG2
+    this->write_reg(0x02, 0x06); // IOCFG0
+    this->write_reg(0x0B, 0x06); // FSCTRL1
+    this->write_reg(0x0C, 0x00); // FSCTRL0
+    this->write_reg(0x0D, 0x10); // FREQ2 (433.897 MHz)
+    this->write_reg(0x0E, 0xB0); // FREQ1
+    this->write_reg(0x0F, 0x71); // FREQ0
+    this->write_reg(0x10, 0xF6); // MDMCFG4 (2.4 kBaud)
+    this->write_reg(0x11, 0x83); // MDMCFG3
+    this->write_reg(0x12, 0x00); // MDMCFG2 (2-FSK, direct mode)
+    this->write_reg(0x13, 0x00); // MDMCFG1
+    this->write_reg(0x14, 0xF8); // MDMCFG0
+    this->write_reg(0x15, 0x15); // DEVIATN (10 kHz)
+    this->write_reg(0x18, 0x18); // MCSM0
+    this->write_reg(0x20, 0xFB); // WORCTRL
+    this->write_reg(0x22, 0x10); // FREND0
+    this->write_reg(0x23, 0xE9); // FSCAL3
+    this->write_reg(0x24, 0x2A); // FSCAL2
+    this->write_reg(0x25, 0x00); // FSCAL1
+    this->write_reg(0x26, 0x1F); // FSCAL0
+    this->write_reg(0x3E, 0xC0); // PATABLE (+10 dBm Power)
+
+    this->write_strobe(0x36); // SIDLE
+    ESP_LOGI("quiet_cool", "Native CC1101 setup complete.");
+  }
+
+  void send_bits(const char *data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+      bool bit = (data[i] == '1');
+      this->gdo0_pin->digital_write(bit);
+      delayMicroseconds(415); // ESP-IDF safe timing (Interrupts remain enabled!)
+    }
+  }
+
+  void send_raw(const char *data, size_t len) {
+    if (len == 0) return;
+
+    ESP_LOGD("quiet_cool", "Transmitting %zu bits...", len);
+
+    this->gdo0_pin->digital_write(false);
+    this->write_strobe(0x35); // STX (Enter TX mode)
+
+    const char *preamble = "00";
+    this->send_bits(preamble, 2);
+    this->send_bits(data, len);
+
+    this->write_strobe(0x36); // SIDLE
+    delay(10);
+  }
+
+  void transmit_command(int index) {
+    if (index < 0 || index >= 22) {
+      ESP_LOGE("quiet_cool", "Invalid command index: %d", index);
+      return;
+    }
+
+    const char *cmd = SPEED_SETTINGS[index];
+    size_t len = strlen(cmd);
+
+    for (int i = 0; i < 3; i++) {
+      this->send_raw(cmd, len);
+      delay(18); // Yields to FreeRTOS tasks & Watchdog Timer!
+    }
+  }
+
+  // Quick helper methods for Home Assistant automations
+  void turn_off() { this->transmit_command(7); }         // HOFF
+  void turn_on_high() { this->transmit_command(6); }     // HON
+  void turn_on_medium() { this->transmit_command(13); }  // MON
+  void turn_on_low() { this->transmit_command(20); }     // LON
+};
+
+}  // namespace quiet_cool
+}  // namespace esphome
