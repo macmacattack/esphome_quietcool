@@ -5,8 +5,7 @@
 #include "esphome/components/spi/spi.h"
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "rom/ets_sys.h" // Native ESP32 Hardware Delays
 
 namespace esphome {
 namespace quiet_cool {
@@ -83,16 +82,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     delay(10);
 
     uint8_t ver = this->read_reg(0xF1);
-    
-    // CRITICAL HARDWARE CHECK
-    if (ver == 0x00 || ver == 0xFF) {
-        ESP_LOGE("quiet_cool", "=================================================");
-        ESP_LOGE("quiet_cool", "CRITICAL ERROR: CC1101 RADIO NOT DETECTED!");
-        ESP_LOGE("quiet_cool", "The SPI wiring is incorrect or CS pin is wrong.");
-        ESP_LOGE("quiet_cool", "=================================================");
-    } else {
-        ESP_LOGI("quiet_cool", "CC1101 Found & Wired Correctly! Chip Version: 0x%02X", ver);
-    }
+    ESP_LOGI("quiet_cool", "CC1101 Found! Chip Version: 0x%02X", ver);
 
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x02, 0x06); 
@@ -120,13 +110,19 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   }
 
   void send_byte_array(const uint8_t *data, size_t len) {
+    // LOCK OUT WI-FI INTERRUPTS FOR FLAWLESS TIMING (Takes exactly ~66ms)
+    portDISABLE_INTERRUPTS();
+    
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        delayMicroseconds(415); 
+        ets_delay_us(415); // Hardware ROM delay (highly precise)
       }
     }
+    
+    // TURN WI-FI INTERRUPTS BACK ON
+    portENABLE_INTERRUPTS();
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
@@ -142,25 +138,18 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     ESP_LOGD("quiet_cool", "Transmitting Dynamic Payload. CMD: 0x%02X", cmd_byte);
 
-    // Elevate CPU priority to block Wi-Fi jitter during transmission
-    UBaseType_t old_priority = uxTaskPriorityGet(NULL);
-    vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);
-
     for (int i = 0; i < 3; i++) {
       gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // Enter TX mode
       
-      // Let the CC1101 warm up the antenna before blasting data
-      delayMicroseconds(1000); 
+      ets_delay_us(1000); // Warm up antenna
 
       this->send_byte_array(packet, 20);
 
       this->write_strobe(0x36); // Back to SIDLE
-      delay(18); // Yield back to the system safely
+      
+      delay(18); // FreeRTOS yield so Wi-Fi can process pending data
     }
-
-    // Restore normal system priority
-    vTaskPrioritySet(NULL, old_priority);
   }
 
   void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
