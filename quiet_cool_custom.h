@@ -31,7 +31,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   gpio_num_t gdo2_pin = GPIO_NUM_4;
   gpio_num_t cs_pin   = GPIO_NUM_1;
 
-  // YOUR actual paired remote ID! 
+  // YOUR actual paired remote ID! Unshifted and raw.
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
@@ -87,26 +87,30 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x2D); // CRITICAL: GDO0 Input Mode
+    
+    // --- CRITICAL FIX ---
+    // Reverted to 0x06. The chip will auto-configure GDO0 as an input during TX!
+    this->write_reg(0x02, 0x06); 
+    
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
     this->write_reg(0x06, 0xFF); 
     this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x32); // CRITICAL: Async Serial Mode
+    this->write_reg(0x08, 0x32); // Async Serial Mode
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
-    this->write_reg(0x0D, 0x10); 
+    this->write_reg(0x0D, 0x10); // 433.92 MHz
     this->write_reg(0x0E, 0xB0); 
     this->write_reg(0x0F, 0x71); 
-    this->write_reg(0x10, 0xF6); 
+    this->write_reg(0x10, 0xF6); // 2400 Baud Math
     this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); 
+    this->write_reg(0x12, 0x00); // 2-FSK
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
-    this->write_reg(0x15, 0x25); // CRITICAL: Fixed 10kHz deviation math
+    this->write_reg(0x15, 0x25); // 10kHz deviation math
     this->write_reg(0x16, 0x07); 
     this->write_reg(0x17, 0x30); 
     this->write_reg(0x18, 0x18); 
@@ -129,13 +133,11 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   void send_byte_array(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
     
-    // 1. Send the crucial "00" preamble to tune the receiver AGC
+    // 1. Send a brief unmodulated carrier to stabilize the transmitter
     gpio_set_level(this->gdo0_pin, 0);
-    ets_delay_us(417);
-    gpio_set_level(this->gdo0_pin, 0);
-    ets_delay_us(417);
+    ets_delay_us(834);
 
-    // 2. Transmit the shifted byte array
+    // 2. Transmit the dynamic byte array
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
@@ -144,38 +146,33 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       }
     }
     
+    // 3. Ensure pin goes low immediately after transmitting
+    gpio_set_level(this->gdo0_pin, 0);
     portENABLE_INTERRUPTS();
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
     uint8_t cmd_byte = speed | duration;
     
+    // --- PREAMBLE FIX ---
+    // Replaced 0x15 with 0xAA to generate a pristine '10101010' square wave for the fan to lock onto!
     uint8_t packet[20] = {
-      0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
+      0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
       remote_id[4], remote_id[5], remote_id[6],             
       cmd_byte, cmd_byte,                                   
       0x00, 0x00                                            
     };
 
-    // --- MATHEMATICAL FIX: Shift the entire 20-byte packet right by 1 bit ---
-    uint8_t shifted_packet[20] = {0};
-    uint8_t carry = 0;
-    for (int i = 0; i < 20; i++) {
-      uint8_t next_carry = packet[i] & 0x01; // Save LSB for the next byte
-      shifted_packet[i] = (packet[i] >> 1) | (carry << 7);
-      carry = next_carry;
-    }
-
     // --- DEBUG PRINTER ---
     std::string debug_str = "";
     for (int i = 0; i < 20; i++) {
       for (int bit = 7; bit >= 0; bit--) {
-        debug_str += ((shifted_packet[i] >> bit) & 1) ? "1" : "0";
+        debug_str += ((packet[i] >> bit) & 1) ? "1" : "0";
       }
     }
     ESP_LOGD("quiet_cool", "============================================================");
-    ESP_LOGD("quiet_cool", "TRANSMITTING EXACT RF BITS (Shifted by 1):");
+    ESP_LOGD("quiet_cool", "TRANSMITTING RAW UN-SHIFTED BITS:");
     ESP_LOGD("quiet_cool", "%s", debug_str.c_str());
     ESP_LOGD("quiet_cool", "COMMAND BYTE: 0x%02X", cmd_byte);
     ESP_LOGD("quiet_cool", "============================================================");
@@ -186,7 +183,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       
       ets_delay_us(1000); // Give CC1101 time to calibrate PLL and enter TX
       
-      this->send_byte_array(shifted_packet, 20);
+      this->send_byte_array(packet, 20);
 
       this->write_strobe(0x36); // Back to SIDLE
       
