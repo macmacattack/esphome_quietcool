@@ -93,31 +93,44 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     uint8_t ver = this->read_reg(0xF1);
     ESP_LOGI("quiet_cool", "CC1101 Found! Chip Version: 0x%02X", ver);
 
-    // --- CRITICAL FIX: The missing PKTCTRL registers for Direct Mode ---
-    this->write_reg(0x07, 0x00); // PKTCTRL1: No address check
-    this->write_reg(0x08, 0x30); // PKTCTRL0: ASYNC SERIAL MODE (PKT_FORMAT=3). This tells the radio to listen to GDO0!
-
-    this->write_reg(0x00, 0x29); 
-    this->write_reg(0x02, 0x06); 
-    this->write_reg(0x0B, 0x06); 
-    this->write_reg(0x0C, 0x00); 
-    this->write_reg(0x0D, 0x10); 
-    this->write_reg(0x0E, 0xB0); 
-    this->write_reg(0x0F, 0x71); 
-    this->write_reg(0x10, 0xF6); 
-    this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); 
-    this->write_reg(0x13, 0x00); 
-    this->write_reg(0x14, 0xF8); 
-    this->write_reg(0x15, 0x15); 
-    this->write_reg(0x18, 0x18); 
-    this->write_reg(0x20, 0xFB); 
-    this->write_reg(0x22, 0x10); 
-    this->write_reg(0x23, 0xE9); 
-    this->write_reg(0x24, 0x2A); 
-    this->write_reg(0x25, 0x00); 
-    this->write_reg(0x26, 0x1F); 
-    this->write_reg(0x3E, 0x60); // PATABLE: 0dBm (Matches original "low power" setup)
+    // The Ultimate ELECHOUSE Configuration Clone
+    this->write_reg(0x00, 0x29); // IOCFG2
+    this->write_reg(0x01, 0x2E); // IOCFG1
+    this->write_reg(0x02, 0x2D); // IOCFG0: CRITICAL - Sets GDO0 as Input for Async TX!
+    this->write_reg(0x03, 0x07); // FIFOTHR
+    this->write_reg(0x04, 0xD3); // SYNC1
+    this->write_reg(0x05, 0x91); // SYNC0
+    this->write_reg(0x06, 0xFF); // PKTLEN
+    this->write_reg(0x07, 0x04); // PKTCTRL1
+    this->write_reg(0x08, 0x32); // PKTCTRL0: CRITICAL - Async serial mode
+    this->write_reg(0x09, 0x00); // ADDR
+    this->write_reg(0x0A, 0x00); // CHANNR
+    this->write_reg(0x0B, 0x06); // FSCTRL1
+    this->write_reg(0x0C, 0x00); // FSCTRL0
+    this->write_reg(0x0D, 0x10); // FREQ2
+    this->write_reg(0x0E, 0xB0); // FREQ1
+    this->write_reg(0x0F, 0x71); // FREQ0 (433.897 MHz)
+    this->write_reg(0x10, 0xF6); // MDMCFG4 (2.398 kBaud)
+    this->write_reg(0x11, 0x83); // MDMCFG3
+    this->write_reg(0x12, 0x00); // MDMCFG2 (2-FSK, No Sync)
+    this->write_reg(0x13, 0x00); // MDMCFG1 (No Preamble)
+    this->write_reg(0x14, 0xF8); // MDMCFG0
+    this->write_reg(0x15, 0x25); // DEVIATN: CRITICAL - Math fixed to exact Arduino 10kHz formula
+    this->write_reg(0x16, 0x07); // MCSM2
+    this->write_reg(0x17, 0x30); // MCSM1
+    this->write_reg(0x18, 0x18); // MCSM0
+    this->write_reg(0x19, 0x16); // FOCCFG
+    this->write_reg(0x1A, 0x6C); // BSCFG
+    this->write_reg(0x1B, 0x43); // AGCCTRL2
+    this->write_reg(0x1C, 0x40); // AGCCTRL1
+    this->write_reg(0x1D, 0x91); // AGCCTRL0
+    this->write_reg(0x21, 0x56); // FREND1
+    this->write_reg(0x22, 0x10); // FREND0
+    this->write_reg(0x23, 0xE9); // FSCAL3
+    this->write_reg(0x24, 0x2A); // FSCAL2
+    this->write_reg(0x25, 0x00); // FSCAL1
+    this->write_reg(0x26, 0x1F); // FSCAL0
+    this->write_reg(0x3E, 0xC0); // PATABLE: Bumping to MAX Power (+10dBm) to ensure it reaches!
 
     this->write_strobe(0x36); // SIDLE
   }
@@ -125,19 +138,18 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   void send_raw_string(const char *cmd) {
     size_t len = strlen(cmd);
     
-    // LOCK OUT WI-FI FOR FLAWLESS TIMING
     portDISABLE_INTERRUPTS();
     
     // 1. Send the crucial "00" preamble to tune the receiver AGC
     gpio_set_level(this->gdo0_pin, 0);
-    ets_delay_us(415);
+    ets_delay_us(417); // Delay bumped to 417 to match Arduino overhead
     gpio_set_level(this->gdo0_pin, 0);
-    ets_delay_us(415);
+    ets_delay_us(417);
 
     // 2. Iterate over the literal text string exactly like the old code did
     for (size_t i = 0; i < len; i++) {
       gpio_set_level(this->gdo0_pin, (cmd[i] == '1') ? 1 : 0);
-      ets_delay_us(415);
+      ets_delay_us(417); 
     }
     
     portENABLE_INTERRUPTS();
@@ -158,12 +170,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
       this->write_strobe(0x36); // Back to SIDLE
       
-      // Delay 10ms (from original sendRawData) + 18ms (from sendPacket)
-      delay(28); 
+      delay(28); // 10ms + 18ms original delays
     }
   }
 
-  // Passing the exact indices from the string array
   void turn_off() { this->transmit_command(7); }         // HOFF
   void turn_on_high() { this->transmit_command(6); }     // HON
   void turn_on_medium() { this->transmit_command(13); }  // MON
