@@ -93,6 +93,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     uint8_t ver = this->read_reg(0xF1);
     ESP_LOGI("quiet_cool", "CC1101 Found! Chip Version: 0x%02X", ver);
 
+    // --- CRITICAL FIX: The missing PKTCTRL registers for Direct Mode ---
+    this->write_reg(0x07, 0x00); // PKTCTRL1: No address check
+    this->write_reg(0x08, 0x30); // PKTCTRL0: ASYNC SERIAL MODE (PKT_FORMAT=3). This tells the radio to listen to GDO0!
+
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x02, 0x06); 
     this->write_reg(0x0B, 0x06); 
@@ -113,7 +117,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x24, 0x2A); 
     this->write_reg(0x25, 0x00); 
     this->write_reg(0x26, 0x1F); 
-    this->write_reg(0x3E, 0xC0); 
+    this->write_reg(0x3E, 0x60); // PATABLE: 0dBm (Matches original "low power" setup)
 
     this->write_strobe(0x36); // SIDLE
   }
@@ -147,6 +151,8 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     for (int i = 0; i < 3; i++) {
       gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // Enter TX mode
+      
+      ets_delay_us(1000); // Give CC1101 time to calibrate PLL and enter TX
       
       this->send_raw_string(cmd);
 
