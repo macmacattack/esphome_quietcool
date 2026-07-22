@@ -6,7 +6,7 @@
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
 #include "rom/ets_sys.h"
-#include <string> // Added for the Debug Printer
+#include <string>
 
 namespace esphome {
 namespace quiet_cool {
@@ -121,7 +121,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x24, 0x2A); 
     this->write_reg(0x25, 0x00); 
     this->write_reg(0x26, 0x1F); 
-    this->write_reg(0x3E, 0xC0); // Max power to reach the fan
+    this->write_reg(0x3E, 0xC0); // Max power
 
     this->write_strobe(0x36); // SIDLE
   }
@@ -135,7 +135,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     gpio_set_level(this->gdo0_pin, 0);
     ets_delay_us(417);
 
-    // 2. Transmit the dynamic byte array perfectly
+    // 2. Transmit the shifted byte array
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
@@ -158,15 +158,24 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    // --- YOUR DEBUG PRINTER ---
+    // --- MATHEMATICAL FIX: Shift the entire 20-byte packet right by 1 bit ---
+    uint8_t shifted_packet[20] = {0};
+    uint8_t carry = 0;
+    for (int i = 0; i < 20; i++) {
+      uint8_t next_carry = packet[i] & 0x01; // Save LSB for the next byte
+      shifted_packet[i] = (packet[i] >> 1) | (carry << 7);
+      carry = next_carry;
+    }
+
+    // --- DEBUG PRINTER ---
     std::string debug_str = "";
     for (int i = 0; i < 20; i++) {
       for (int bit = 7; bit >= 0; bit--) {
-        debug_str += ((packet[i] >> bit) & 1) ? "1" : "0";
+        debug_str += ((shifted_packet[i] >> bit) & 1) ? "1" : "0";
       }
     }
     ESP_LOGD("quiet_cool", "============================================================");
-    ESP_LOGD("quiet_cool", "TRANSMITTING EXACT RF BITS (Verify against sniffer):");
+    ESP_LOGD("quiet_cool", "TRANSMITTING EXACT RF BITS (Shifted by 1):");
     ESP_LOGD("quiet_cool", "%s", debug_str.c_str());
     ESP_LOGD("quiet_cool", "COMMAND BYTE: 0x%02X", cmd_byte);
     ESP_LOGD("quiet_cool", "============================================================");
@@ -177,7 +186,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       
       ets_delay_us(1000); // Give CC1101 time to calibrate PLL and enter TX
       
-      this->send_byte_array(packet, 20);
+      this->send_byte_array(shifted_packet, 20);
 
       this->write_strobe(0x36); // Back to SIDLE
       
