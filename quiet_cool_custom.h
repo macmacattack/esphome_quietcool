@@ -10,7 +10,7 @@
 namespace esphome {
 namespace quiet_cool {
 
-// The original, raw bit-strings. This guarantees the fan hears exactly what it learned.
+// The original, raw bit-strings.
 static const char *const SPEED_SETTINGS[] = {
     "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100100110011001100110000", // PRE (0)
     "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000110110001000", // H1 (1)
@@ -124,7 +124,13 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     // LOCK OUT WI-FI FOR FLAWLESS TIMING
     portDISABLE_INTERRUPTS();
     
-    // Iterate over the literal text string exactly like the old code did
+    // 1. Send the crucial "00" preamble to tune the receiver AGC
+    gpio_set_level(this->gdo0_pin, 0);
+    ets_delay_us(415);
+    gpio_set_level(this->gdo0_pin, 0);
+    ets_delay_us(415);
+
+    // 2. Iterate over the literal text string exactly like the old code did
     for (size_t i = 0; i < len; i++) {
       gpio_set_level(this->gdo0_pin, (cmd[i] == '1') ? 1 : 0);
       ets_delay_us(415);
@@ -142,13 +148,12 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // Enter TX mode
       
-      ets_delay_us(1000); // Warm up antenna
-
       this->send_raw_string(cmd);
 
       this->write_strobe(0x36); // Back to SIDLE
       
-      delay(18); // FreeRTOS yield
+      // Delay 10ms (from original sendRawData) + 18ms (from sendPacket)
+      delay(28); 
     }
   }
 
