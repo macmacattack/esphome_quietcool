@@ -6,41 +6,33 @@
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
 #include "rom/ets_sys.h"
+#include <string> // Added for the Debug Printer
 
 namespace esphome {
 namespace quiet_cool {
 
-// The original, raw bit-strings.
-static const char *const SPEED_SETTINGS[] = {
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100100110011001100110000", // PRE (0)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000110110001000", // H1 (1)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011001010110010000", // H2 (2)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011010010110100000", // H4 (3)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011100010111000000", // H8 (4)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011110010111100000", // H12 (5)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011111110111111000", // HON (6)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101011000010110000000", // HOFF (7)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000110100001000", // M1 (8)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010001010100010000", // M2 (9)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010010010100100000", // M4 (10)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010100010101000000", // M8 (11)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010110010101100000", // M12 (12)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010111110101111000", // MON (13)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101010000010100000000", // MOFF (14)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000110010001000", // L1 (15)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001001010010010000", // L2 (16)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001010010010100000", // L4 (17)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001100010011000000", // L8 (18)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001110010011100000", // L12 (19)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001111110011111000", // LON (20)
-    "0000101011010101010101010101010101010101010101010101010101010101010101010001011011101010000000110110010110000000011110111111100101001000010010000000", // LOFF (21)
-};
+// Speed Command Bytes
+const uint8_t SPEED_HIGH   = 0xB0;
+const uint8_t SPEED_MEDIUM = 0xA0;
+const uint8_t SPEED_LOW    = 0x90;
+
+// Duration Command Bytes
+const uint8_t DUR_OFF = 0x00;
+const uint8_t DUR_1H  = 0x01;
+const uint8_t DUR_2H  = 0x02;
+const uint8_t DUR_4H  = 0x04;
+const uint8_t DUR_8H  = 0x08;
+const uint8_t DUR_12H = 0x0C;
+const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
   gpio_num_t gdo0_pin = GPIO_NUM_2;
   gpio_num_t gdo2_pin = GPIO_NUM_4;
   gpio_num_t cs_pin   = GPIO_NUM_1;
+
+  // YOUR actual paired remote ID! 
+  uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
     gpio_reset_pin(this->cs_pin);
@@ -93,72 +85,91 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     uint8_t ver = this->read_reg(0xF1);
     ESP_LOGI("quiet_cool", "CC1101 Found! Chip Version: 0x%02X", ver);
 
-    // The Ultimate ELECHOUSE Configuration Clone
-    this->write_reg(0x00, 0x29); // IOCFG2
-    this->write_reg(0x01, 0x2E); // IOCFG1
-    this->write_reg(0x02, 0x2D); // IOCFG0: CRITICAL - Sets GDO0 as Input for Async TX!
-    this->write_reg(0x03, 0x07); // FIFOTHR
-    this->write_reg(0x04, 0xD3); // SYNC1
-    this->write_reg(0x05, 0x91); // SYNC0
-    this->write_reg(0x06, 0xFF); // PKTLEN
-    this->write_reg(0x07, 0x04); // PKTCTRL1
-    this->write_reg(0x08, 0x32); // PKTCTRL0: CRITICAL - Async serial mode
-    this->write_reg(0x09, 0x00); // ADDR
-    this->write_reg(0x0A, 0x00); // CHANNR
-    this->write_reg(0x0B, 0x06); // FSCTRL1
-    this->write_reg(0x0C, 0x00); // FSCTRL0
-    this->write_reg(0x0D, 0x10); // FREQ2
-    this->write_reg(0x0E, 0xB0); // FREQ1
-    this->write_reg(0x0F, 0x71); // FREQ0 (433.897 MHz)
-    this->write_reg(0x10, 0xF6); // MDMCFG4 (2.398 kBaud)
-    this->write_reg(0x11, 0x83); // MDMCFG3
-    this->write_reg(0x12, 0x00); // MDMCFG2 (2-FSK, No Sync)
-    this->write_reg(0x13, 0x00); // MDMCFG1 (No Preamble)
-    this->write_reg(0x14, 0xF8); // MDMCFG0
-    this->write_reg(0x15, 0x25); // DEVIATN: CRITICAL - Math fixed to exact Arduino 10kHz formula
-    this->write_reg(0x16, 0x07); // MCSM2
-    this->write_reg(0x17, 0x30); // MCSM1
-    this->write_reg(0x18, 0x18); // MCSM0
-    this->write_reg(0x19, 0x16); // FOCCFG
-    this->write_reg(0x1A, 0x6C); // BSCFG
-    this->write_reg(0x1B, 0x43); // AGCCTRL2
-    this->write_reg(0x1C, 0x40); // AGCCTRL1
-    this->write_reg(0x1D, 0x91); // AGCCTRL0
-    this->write_reg(0x21, 0x56); // FREND1
-    this->write_reg(0x22, 0x10); // FREND0
-    this->write_reg(0x23, 0xE9); // FSCAL3
-    this->write_reg(0x24, 0x2A); // FSCAL2
-    this->write_reg(0x25, 0x00); // FSCAL1
-    this->write_reg(0x26, 0x1F); // FSCAL0
-    this->write_reg(0x3E, 0xC0); // PATABLE: Bumping to MAX Power (+10dBm) to ensure it reaches!
+    this->write_reg(0x00, 0x29); 
+    this->write_reg(0x01, 0x2E); 
+    this->write_reg(0x02, 0x2D); // CRITICAL: GDO0 Input Mode
+    this->write_reg(0x03, 0x07); 
+    this->write_reg(0x04, 0xD3); 
+    this->write_reg(0x05, 0x91); 
+    this->write_reg(0x06, 0xFF); 
+    this->write_reg(0x07, 0x04); 
+    this->write_reg(0x08, 0x32); // CRITICAL: Async Serial Mode
+    this->write_reg(0x09, 0x00); 
+    this->write_reg(0x0A, 0x00); 
+    this->write_reg(0x0B, 0x06); 
+    this->write_reg(0x0C, 0x00); 
+    this->write_reg(0x0D, 0x10); 
+    this->write_reg(0x0E, 0xB0); 
+    this->write_reg(0x0F, 0x71); 
+    this->write_reg(0x10, 0xF6); 
+    this->write_reg(0x11, 0x83); 
+    this->write_reg(0x12, 0x00); 
+    this->write_reg(0x13, 0x00); 
+    this->write_reg(0x14, 0xF8); 
+    this->write_reg(0x15, 0x25); // CRITICAL: Fixed 10kHz deviation math
+    this->write_reg(0x16, 0x07); 
+    this->write_reg(0x17, 0x30); 
+    this->write_reg(0x18, 0x18); 
+    this->write_reg(0x19, 0x16); 
+    this->write_reg(0x1A, 0x6C); 
+    this->write_reg(0x1B, 0x43); 
+    this->write_reg(0x1C, 0x40); 
+    this->write_reg(0x1D, 0x91); 
+    this->write_reg(0x21, 0x56); 
+    this->write_reg(0x22, 0x10); 
+    this->write_reg(0x23, 0xE9); 
+    this->write_reg(0x24, 0x2A); 
+    this->write_reg(0x25, 0x00); 
+    this->write_reg(0x26, 0x1F); 
+    this->write_reg(0x3E, 0xC0); // Max power to reach the fan
 
     this->write_strobe(0x36); // SIDLE
   }
 
-  void send_raw_string(const char *cmd) {
-    size_t len = strlen(cmd);
-    
+  void send_byte_array(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
     
     // 1. Send the crucial "00" preamble to tune the receiver AGC
     gpio_set_level(this->gdo0_pin, 0);
-    ets_delay_us(417); // Delay bumped to 417 to match Arduino overhead
+    ets_delay_us(417);
     gpio_set_level(this->gdo0_pin, 0);
     ets_delay_us(417);
 
-    // 2. Iterate over the literal text string exactly like the old code did
+    // 2. Transmit the dynamic byte array perfectly
     for (size_t i = 0; i < len; i++) {
-      gpio_set_level(this->gdo0_pin, (cmd[i] == '1') ? 1 : 0);
-      ets_delay_us(417); 
+      uint8_t b = data[i];
+      for (int bit = 7; bit >= 0; bit--) {
+        gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
+        ets_delay_us(417);
+      }
     }
     
     portENABLE_INTERRUPTS();
   }
 
-  void transmit_command(int index) {
-    const char *cmd = SPEED_SETTINGS[index];
+  void transmit_command(uint8_t speed, uint8_t duration) {
+    uint8_t cmd_byte = speed | duration;
+    
+    uint8_t packet[20] = {
+      0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
+      remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
+      remote_id[4], remote_id[5], remote_id[6],             
+      cmd_byte, cmd_byte,                                   
+      0x00, 0x00                                            
+    };
 
-    ESP_LOGD("quiet_cool", "Transmitting string payload #%d", index);
+    // --- YOUR DEBUG PRINTER ---
+    std::string debug_str = "";
+    for (int i = 0; i < 20; i++) {
+      for (int bit = 7; bit >= 0; bit--) {
+        debug_str += ((packet[i] >> bit) & 1) ? "1" : "0";
+      }
+    }
+    ESP_LOGD("quiet_cool", "============================================================");
+    ESP_LOGD("quiet_cool", "TRANSMITTING EXACT RF BITS (Verify against sniffer):");
+    ESP_LOGD("quiet_cool", "%s", debug_str.c_str());
+    ESP_LOGD("quiet_cool", "COMMAND BYTE: 0x%02X", cmd_byte);
+    ESP_LOGD("quiet_cool", "============================================================");
 
     for (int i = 0; i < 3; i++) {
       gpio_set_level(this->gdo0_pin, 0);
@@ -166,18 +177,18 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       
       ets_delay_us(1000); // Give CC1101 time to calibrate PLL and enter TX
       
-      this->send_raw_string(cmd);
+      this->send_byte_array(packet, 20);
 
       this->write_strobe(0x36); // Back to SIDLE
       
-      delay(28); // 10ms + 18ms original delays
+      delay(28); 
     }
   }
 
-  void turn_off() { this->transmit_command(7); }         // HOFF
-  void turn_on_high() { this->transmit_command(6); }     // HON
-  void turn_on_medium() { this->transmit_command(13); }  // MON
-  void turn_on_low() { this->transmit_command(20); }     // LON
+  void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
+  void turn_on_high() { this->transmit_command(SPEED_HIGH, DUR_ON); }
+  void turn_on_medium() { this->transmit_command(SPEED_MEDIUM, DUR_ON); }
+  void turn_on_low() { this->transmit_command(SPEED_LOW, DUR_ON); }
 };
 
 }  
