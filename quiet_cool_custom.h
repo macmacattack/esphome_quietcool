@@ -10,21 +10,22 @@
 namespace esphome {
 namespace quiet_cool {
 
-// OEM Speed Commands
-const uint8_t CMD_OFF    = 0x00; // Speed bits = 00
-const uint8_t CMD_LOW    = 0x10; // Speed bits = 01
-const uint8_t CMD_MEDIUM = 0x20; // Speed bits = 10
-const uint8_t CMD_HIGH   = 0x30; // Speed bits = 11
+// Command speed masks
+const uint8_t SPEED_HIGH   = 0xB0;
+const uint8_t SPEED_MEDIUM = 0xA0;
+const uint8_t SPEED_LOW    = 0x90;
 
-// OEM Duration Mask (Lower 4 bits)
-const uint8_t DUR_HOLD   = 0x0F; // Continuous ON
+// Command duration masks
+const uint8_t DUR_OFF = 0x00;
+const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
-  gpio_num_t gdo0_pin = GPIO_NUM_2; // D1
-  gpio_num_t cs_pin   = GPIO_NUM_1; // D0
+  // XIAO ESP32-S3 Pin Mapping
+  gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 Pad
+  gpio_num_t cs_pin   = GPIO_NUM_1; // D0 Pad
 
-  // Your existing 7-byte paired remote ID
+  // Configurable 7-byte remote ID (rrb3942 architecture)
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
@@ -61,55 +62,58 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // --- OEM FIRMWARE CC1101 REGISTER PROFILE ---
-    this->write_reg(0x00, 0x29); // IOCFG2
-    this->write_reg(0x02, 0x2D); // IOCFG0: Async Serial Input mode (GDO0)
-    this->write_reg(0x03, 0x07); // FIFOTHR
-    this->write_reg(0x04, 0xD3); // SYNC1 (0xD3)
-    this->write_reg(0x05, 0x91); // SYNC0 (0x91)
-    this->write_reg(0x07, 0x04); // PKTCTRL1
-    this->write_reg(0x08, 0x32); // PKTCTRL0: Asynchronous Serial Mode
-    this->write_reg(0x0B, 0x06); // FSCTRL1
-    
-    // Frequency Configuration: Exact 433.92 MHz
-    this->write_reg(0x0D, 0x10); // FREQ2
-    this->write_reg(0x0E, 0xB1); // FREQ1
-    this->write_reg(0x0F, 0x3B); // FREQ0 (433.92 MHz)
-
-    // Data Rate: 2400 Baud
-    this->write_reg(0x10, 0xF6); // MDMCFG4
-    this->write_reg(0x11, 0x83); // MDMCFG3
-    this->write_reg(0x12, 0x00); // MDMCFG2: 2-FSK, No Sync
-    this->write_reg(0x13, 0x00); // MDMCFG1
-    this->write_reg(0x14, 0xF8); // MDMCFG0
-
-    // Deviation: +/- 10 kHz
-    this->write_reg(0x15, 0x25); // DEVIATN
-
-    this->write_reg(0x18, 0x18); // MCSM0
-    this->write_reg(0x19, 0x16); // FOCCFG
-    this->write_reg(0x1A, 0x6C); // BSCFG
-    this->write_reg(0x21, 0x56); // FREND1
-    this->write_reg(0x22, 0x10); // FREND0
-    this->write_reg(0x23, 0xE9); // FSCAL3
-    this->write_reg(0x24, 0x2A); // FSCAL2
-    this->write_reg(0x25, 0x00); // FSCAL1
-    this->write_reg(0x26, 0x1F); // FSCAL0
-    this->write_reg(0x3E, 0xC0); // PATABLE (+10 dBm max power)
+    // CC1101 registers configured for raw 2-FSK transmission
+    this->write_reg(0x00, 0x29); 
+    this->write_reg(0x01, 0x2E); 
+    this->write_reg(0x02, 0x2D); // GDO0 configured as direct serial TX input
+    this->write_reg(0x03, 0x07); 
+    this->write_reg(0x04, 0xD3); 
+    this->write_reg(0x05, 0x91); 
+    this->write_reg(0x06, 0xFF); 
+    this->write_reg(0x07, 0x04); 
+    this->write_reg(0x08, 0x32); // Asynchronous Serial Mode
+    this->write_reg(0x09, 0x00); 
+    this->write_reg(0x0A, 0x00); 
+    this->write_reg(0x0B, 0x06); 
+    this->write_reg(0x0C, 0x00); 
+    this->write_reg(0x0D, 0x10); 
+    this->write_reg(0x0E, 0xB0); 
+    this->write_reg(0x0F, 0x71); // 433.897 MHz tuned carrier frequency
+    this->write_reg(0x10, 0xF6); 
+    this->write_reg(0x11, 0x83); 
+    this->write_reg(0x12, 0x00); // 2-FSK modulation
+    this->write_reg(0x13, 0x00); 
+    this->write_reg(0x14, 0xF8); 
+    this->write_reg(0x15, 0x25); // 10kHz deviation
+    this->write_reg(0x16, 0x07); 
+    this->write_reg(0x17, 0x30); 
+    this->write_reg(0x18, 0x18); 
+    this->write_reg(0x19, 0x16); 
+    this->write_reg(0x1A, 0x6C); 
+    this->write_reg(0x1B, 0x43); 
+    this->write_reg(0x1C, 0x40); 
+    this->write_reg(0x1D, 0x91); 
+    this->write_reg(0x21, 0x56); 
+    this->write_reg(0x22, 0x10); 
+    this->write_reg(0x23, 0xE9); 
+    this->write_reg(0x24, 0x2A); 
+    this->write_reg(0x25, 0x00); 
+    this->write_reg(0x26, 0x1F); 
+    this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 initialized with 2-FSK 433.92MHz 2400 Baud profile.");
+    ESP_LOGI("quiet_cool", "CC1101 Initialized with byte-array pipeline.");
   }
 
-  void send_raw_bits(const uint8_t *data, size_t len) {
+  // Refactored byte-array transmit function
+  void send_bits_from_bytes(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
 
-    // 2400 Baud = 416.67 us per bit
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(417);
+        ets_delay_us(417); // 2400 Baud bit period
       }
     }
 
@@ -117,38 +121,37 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     portENABLE_INTERRUPTS();
   }
 
-  void transmit_command(uint8_t speed_cmd, uint8_t duration_cmd) {
-    uint8_t payload_cmd = speed_cmd | duration_cmd;
+  void transmit_command(uint8_t speed, uint8_t duration) {
+    uint8_t cmd_byte = speed | duration;
 
-    // Packet Layout: 4-byte Preamble + 2-byte Hardware Sync + 7-byte ID + Duplicate Command Byte
-    uint8_t packet[15] = {
-      0xAA, 0xAA, 0xAA, 0xAA,                                 // Preamble
-      0xD3, 0x91,                                             // Hardware Sync
+    // 20-byte packet buffer structure
+    uint8_t packet[20] = {
+      0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
-      remote_id[4], remote_id[5], remote_id[6],               // 7-Byte Remote ID
-      payload_cmd, payload_cmd                                // Command Byte (x2)
+      remote_id[4], remote_id[5], remote_id[6],             
+      cmd_byte, cmd_byte,                                   
+      0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Transmitting 15-Byte Paired Frame (CMD: 0x%02X)", payload_cmd);
+    ESP_LOGD("quiet_cool", "Sending Byte-Array Packet with CMD 0x%02X", cmd_byte);
 
     for (int i = 0; i < 3; i++) {
-      this->write_strobe(0x36); // SIDLE
       gpio_set_level(this->gdo0_pin, 0);
-      this->write_strobe(0x35); // Enter TX mode
+      this->write_strobe(0x35); // Enter TX
       
-      ets_delay_us(1000); // Allow PLL to lock
+      ets_delay_us(1000); 
       
-      this->send_raw_bits(packet, 15);
+      this->send_bits_from_bytes(packet, 20);
 
       this->write_strobe(0x36); // Return to SIDLE
       delay(28); 
     }
   }
 
-  void turn_off() { this->transmit_command(CMD_OFF, DUR_HOLD); }
-  void turn_on_high() { this->transmit_command(CMD_HIGH, DUR_HOLD); }
-  void turn_on_medium() { this->transmit_command(CMD_MEDIUM, DUR_HOLD); }
-  void turn_on_low() { this->transmit_command(CMD_LOW, DUR_HOLD); }
+  void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
+  void turn_on_high() { this->transmit_command(SPEED_HIGH, DUR_ON); }
+  void turn_on_medium() { this->transmit_command(SPEED_MEDIUM, DUR_ON); }
+  void turn_on_low() { this->transmit_command(SPEED_LOW, DUR_ON); }
 };
 
 }  
