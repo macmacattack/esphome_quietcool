@@ -78,30 +78,34 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // --- THE TRUE FSK RAW DIRECT MODE ---
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x06); // GDO0 Config
+    
+    // --- THE FATAL FLAW IS FIXED ---
+    // Section 27.1 of TI Datasheet: GDO0 MUST be 0x2D for Async Serial TX!
+    this->write_reg(0x02, 0x2D); 
+    
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
     this->write_reg(0x06, 0xFF); 
     this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x32); // PKTCTRL0: Async Serial Mode (No packet handling, raw data)
+    
+    // PKTCTRL0: Async Serial Mode (Raw Data)
+    this->write_reg(0x08, 0x32); 
+    
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
-    
-    // Initial Frequency: 433.897 MHz (Caleb's tuned default)
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
     this->write_reg(0x0F, 0x71); 
-    
     this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
     
-    this->write_reg(0x12, 0x00); // MDMCFG2: 2-FSK Modulation (Restored!)
+    // MDMCFG2: FSK Modulation Restored
+    this->write_reg(0x12, 0x00); 
     
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
@@ -126,7 +130,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   }
 
   void set_frequency(uint8_t freq2, uint8_t freq1, uint8_t freq0) {
-    this->write_strobe(0x36); // SIDLE before changing freq
+    this->write_strobe(0x36); 
     this->write_reg(0x0D, freq2); 
     this->write_reg(0x0E, freq1); 
     this->write_reg(0x0F, freq0); 
@@ -135,16 +139,15 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   void send_byte_array(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
     
-    // 1. Brief unmodulated FSK carrier to tune the receiver AGC
     gpio_set_level(this->gdo0_pin, 0);
     ets_delay_us(834);
 
-    // 2. Bit-bang the shifted FSK data
+    // 2400 Baud exactly = 417us per bit
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(415);
+        ets_delay_us(417);
       }
     }
     
@@ -163,7 +166,6 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    // Mathematically shift the array by 1 bit to create the exact original FSK waveform
     uint8_t shifted_packet[20] = {0};
     uint8_t carry = 0;
     for (int i = 0; i < 20; i++) {
@@ -174,11 +176,11 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     ESP_LOGD("quiet_cool", "Initiating FSK Frequency Sweep. CMD: 0x%02X", cmd_byte);
 
-    // Array of frequencies to sweep: 433.897MHz, 433.920MHz, 433.875MHz
+    // Sweep: Caleb's, Default 433.92, and Lower Drift.
     uint8_t freq_sweep[3][3] = {
-      {0x10, 0xB0, 0x71}, // Caleb's tuned frequency
-      {0x10, 0xB1, 0x3B}, // Perfect 433.920 MHz
-      {0x10, 0xAF, 0x9A}  // Slightly lower to catch downward drift
+      {0x10, 0xB0, 0x71}, 
+      {0x10, 0xB1, 0x3B}, 
+      {0x10, 0xAF, 0x9A}  
     };
 
     for (int i = 0; i < 3; i++) {
@@ -187,7 +189,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // Enter TX mode
       
-      ets_delay_us(1000); // Give CC1101 time to lock PLL
+      ets_delay_us(1000); 
       
       this->send_byte_array(shifted_packet, 20);
 
