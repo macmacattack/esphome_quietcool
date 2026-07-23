@@ -5,6 +5,8 @@
 #include "esphome/components/spi/spi.h"
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
+#include "rom/ets_sys.h"
+#include <string>
 
 namespace esphome {
 namespace quiet_cool {
@@ -16,11 +18,17 @@ const uint8_t SPEED_LOW    = 0x90;
 
 // Duration Command Bytes
 const uint8_t DUR_OFF = 0x00;
+const uint8_t DUR_1H  = 0x01;
+const uint8_t DUR_2H  = 0x02;
+const uint8_t DUR_4H  = 0x04;
+const uint8_t DUR_8H  = 0x08;
+const uint8_t DUR_12H = 0x0C;
 const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
   gpio_num_t gdo0_pin = GPIO_NUM_2;
+  gpio_num_t gdo2_pin = GPIO_NUM_4;
   gpio_num_t cs_pin   = GPIO_NUM_1;
 
   // YOUR actual paired remote ID!
@@ -31,9 +39,9 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->cs_pin, 1); 
 
-    // GDO0 is now an INPUT so we can watch the CC1101 hardware packet status!
     gpio_reset_pin(this->gdo0_pin);
-    gpio_set_direction(this->gdo0_pin, GPIO_MODE_INPUT);
+    gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(this->gdo0_pin, 0);
 
     this->spi_setup();
     this->init_cc1101();
@@ -56,34 +64,48 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->disable();
   }
 
+  uint8_t read_reg(uint8_t addr) {
+    this->enable();
+    gpio_set_level(this->cs_pin, 0);
+    this->write_byte(addr | 0x80);
+    uint8_t val = this->read_byte();
+    gpio_set_level(this->cs_pin, 1);
+    this->disable();
+    return val;
+  }
+
   void init_cc1101() {
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // --- HARDWARE PACKET ENGINE (FIFO MODE) SETTINGS ---
-    // These perfectly recreate the Elechouse default state.
+    // --- THE TRUE FSK RAW DIRECT MODE ---
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x06); // GDO0 asserts when Sync Word is sent, de-asserts at end of packet
+    this->write_reg(0x02, 0x06); // GDO0 Config
     this->write_reg(0x03, 0x07); 
-    this->write_reg(0x04, 0xD3); // Hardware Sync Word High
-    this->write_reg(0x05, 0x91); // Hardware Sync Word Low
+    this->write_reg(0x04, 0xD3); 
+    this->write_reg(0x05, 0x91); 
     this->write_reg(0x06, 0xFF); 
     this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x05); // PKTCTRL0: FIFO Packet Engine with CRC Checksum Enabled!
+    this->write_reg(0x08, 0x32); // PKTCTRL0: Async Serial Mode (No packet handling, raw data)
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
+    
+    // Initial Frequency: 433.897 MHz (Caleb's tuned default)
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
-    this->write_reg(0x0F, 0x71); // 433.897 MHz
-    this->write_reg(0x10, 0xF6); // 2.4k Baud
+    this->write_reg(0x0F, 0x71); 
+    
+    this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); // 2-FSK Modulation
-    this->write_reg(0x13, 0x22); 
+    
+    this->write_reg(0x12, 0x00); // MDMCFG2: 2-FSK Modulation (Restored!)
+    
+    this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
-    this->write_reg(0x15, 0x25); // 10kHz deviation
+    this->write_reg(0x15, 0x25); 
     this->write_reg(0x16, 0x07); 
     this->write_reg(0x17, 0x30); 
     this->write_reg(0x18, 0x18); 
@@ -98,16 +120,41 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x24, 0x2A); 
     this->write_reg(0x25, 0x00); 
     this->write_reg(0x26, 0x1F); 
-    this->write_reg(0x3E, 0xC0); // Max power
+    this->write_reg(0x3E, 0xC0); // Max power (+10dBm)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "Hardware FIFO Packet Engine Initialized Successfully!");
+  }
+
+  void set_frequency(uint8_t freq2, uint8_t freq1, uint8_t freq0) {
+    this->write_strobe(0x36); // SIDLE before changing freq
+    this->write_reg(0x0D, freq2); 
+    this->write_reg(0x0E, freq1); 
+    this->write_reg(0x0F, freq0); 
+  }
+
+  void send_byte_array(const uint8_t *data, size_t len) {
+    portDISABLE_INTERRUPTS();
+    
+    // 1. Brief unmodulated FSK carrier to tune the receiver AGC
+    gpio_set_level(this->gdo0_pin, 0);
+    ets_delay_us(834);
+
+    // 2. Bit-bang the shifted FSK data
+    for (size_t i = 0; i < len; i++) {
+      uint8_t b = data[i];
+      for (int bit = 7; bit >= 0; bit--) {
+        gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
+        ets_delay_us(415);
+      }
+    }
+    
+    gpio_set_level(this->gdo0_pin, 0);
+    portENABLE_INTERRUPTS();
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
     uint8_t cmd_byte = speed | duration;
     
-    // The exact 20-byte payload array
     uint8_t packet[20] = {
       0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
@@ -116,40 +163,38 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Loading payload into CC1101 TX Memory. CMD: 0x%02X", cmd_byte);
+    // Mathematically shift the array by 1 bit to create the exact original FSK waveform
+    uint8_t shifted_packet[20] = {0};
+    uint8_t carry = 0;
+    for (int i = 0; i < 20; i++) {
+      uint8_t next_carry = packet[i] & 0x01; 
+      shifted_packet[i] = (packet[i] >> 1) | (carry << 7);
+      carry = next_carry;
+    }
+
+    ESP_LOGD("quiet_cool", "Initiating FSK Frequency Sweep. CMD: 0x%02X", cmd_byte);
+
+    // Array of frequencies to sweep: 433.897MHz, 433.920MHz, 433.875MHz
+    uint8_t freq_sweep[3][3] = {
+      {0x10, 0xB0, 0x71}, // Caleb's tuned frequency
+      {0x10, 0xB1, 0x3B}, // Perfect 433.920 MHz
+      {0x10, 0xAF, 0x9A}  // Slightly lower to catch downward drift
+    };
 
     for (int i = 0; i < 3; i++) {
-      this->write_strobe(0x36); // Ensure radio is idle
-      this->write_strobe(0x3B); // Flush any old data in TX FIFO
+      this->set_frequency(freq_sweep[i][0], freq_sweep[i][1], freq_sweep[i][2]);
       
-      this->enable();
-      gpio_set_level(this->cs_pin, 0);
+      gpio_set_level(this->gdo0_pin, 0);
+      this->write_strobe(0x35); // Enter TX mode
       
-      // 0x7F triggers a Burst Write into the CC1101's Memory Buffer
-      this->write_byte(0x7F); 
+      ets_delay_us(1000); // Give CC1101 time to lock PLL
       
-      // The Hardware Packet engine demands the length of the array first
-      this->write_byte(20); 
-      
-      // Load the actual array into memory
-      for (int j = 0; j < 20; j++) {
-        this->write_byte(packet[j]);
-      }
-      gpio_set_level(this->cs_pin, 1);
-      this->disable();
-      
-      // Pull the trigger (Enter TX mode)
-      this->write_strobe(0x35); 
-      
-      // Wait for the hardware to automatically push the bits out of the antenna.
-      // The CC1101 pulls GDO0 High when it starts, and drops it Low when the CRC is done.
-      uint32_t timeout = millis();
-      while(gpio_get_level(this->gdo0_pin) == 0 && (millis() - timeout < 50)) { delay(1); }
-      while(gpio_get_level(this->gdo0_pin) == 1 && (millis() - timeout < 100)) { delay(1); }
+      this->send_byte_array(shifted_packet, 20);
 
-      delay(18); // Pause between repeats
+      this->write_strobe(0x36); // Back to SIDLE
+      
+      delay(28); 
     }
-    ESP_LOGD("quiet_cool", "Hardware packet transmission complete!");
   }
 
   void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
