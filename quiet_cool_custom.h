@@ -22,6 +22,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 / GPIO2
   gpio_num_t cs_pin   = GPIO_NUM_1; // D0 / GPIO1
 
+  // Exact paired remote ID from your dev unit
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
@@ -35,18 +36,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     this->spi_setup();
     delay(20);
-    this->init_cc1101_base();
-  }
-
-  uint8_t read_reg(uint8_t addr) {
-    this->enable();
-    gpio_set_level(this->cs_pin, 0);
-    uint8_t header = (addr >= 0x30) ? (addr | 0xC0) : (addr | 0x80);
-    this->write_byte(header);
-    uint8_t val = this->read_byte();
-    gpio_set_level(this->cs_pin, 1);
-    this->disable();
-    return val;
+    this->init_cc1101();
   }
 
   void write_reg(uint8_t addr, uint8_t value) {
@@ -66,47 +56,35 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->disable();
   }
 
-  void write_fifo(const uint8_t *data, size_t len) {
-    this->enable();
-    gpio_set_level(this->cs_pin, 0);
-    this->write_byte(0x7F);
-    for (size_t i = 0; i < len; i++) {
-      this->write_byte(data[i]);
-    }
-    gpio_set_level(this->cs_pin, 1);
-    this->disable();
-  }
-
-  void set_frequency(uint32_t freq_hz) {
-    uint32_t freq_reg = (uint32_t)(((uint64_t)freq_hz << 16) / 26000000);
-    this->write_reg(0x0D, (freq_reg >> 16) & 0xFF);
-    this->write_reg(0x0E, (freq_reg >> 8) & 0xFF);
-    this->write_reg(0x0F, freq_reg & 0xFF);
-  }
-
-  void init_cc1101_base() {
-    this->write_strobe(0x30); // Reset
+  void init_cc1101() {
+    this->write_strobe(0x30); // SRES Reset
     delay(10);
 
+    // CC1101 Register Setup matching ccrome RF config
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x2D); // GDO0 Serial Out
+    this->write_reg(0x02, 0x2D); // Direct Async Output on GDO0
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
-    this->write_reg(0x06, 0x14); 
+    this->write_reg(0x06, 0xFF); 
     this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x32); // Async direct mode default
+    this->write_reg(0x08, 0x32); // Asynchronous Direct Mode
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
 
-    this->set_frequency(433897000); // 433.897 MHz default
+    // 433.897 MHz
+    this->write_reg(0x0D, 0x10); 
+    this->write_reg(0x0E, 0xB0); 
+    this->write_reg(0x0F, 0x71); 
 
-    this->write_reg(0x10, 0xF6); // 2500 baud
+    // 2500 Baud Rate (400us per bit)
+    this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); // 2-FSK
+
+    this->write_reg(0x12, 0x00); 
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
     this->write_reg(0x15, 0x25); 
@@ -127,20 +105,19 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x3E, 0xC0); // Max power (+10 dBm)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 Radio Ready (2500 Baud / 400us URH Timing).");
+    ESP_LOGI("quiet_cool", "CC1101 ESP32-S3 Watchdog-Safe Driver Ready.");
   }
 
-  void send_raw_bits(const uint8_t *data, size_t len, uint32_t bit_delay_us) {
-    portDISABLE_INTERRUPTS();
+  // Precision transmission with ROM delay and task yielding
+  void send_bits_from_bytes(const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(bit_delay_us);
+        ets_delay_us(400); // 400us URH Baud Delay
       }
     }
     gpio_set_level(this->gdo0_pin, 0);
-    portENABLE_INTERRUPTS();
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
@@ -154,7 +131,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X at 2500 baud (400us)...", cmd_byte);
+    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X safely without watchdog panic...", cmd_byte);
 
     for (int i = 0; i < 6; i++) {
       gpio_set_level(this->gdo0_pin, 0);
@@ -162,76 +139,14 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       
       ets_delay_us(1000); 
       
-      this->send_raw_bits(packet, 20, 400); // 400us matching URH recording
+      this->send_bits_from_bytes(packet, 20);
 
       this->write_strobe(0x36); // SIDLE
-      delay(25); 
-    }
-  }
-
-  // --- NON-BLOCKING WATCHDOG-SAFE RF SWEEP ---
-  void run_full_rf_sweep() {
-    ESP_LOGI("rf_sweep", "==================================================");
-    ESP_LOGI("rf_sweep", ">>> STARTING QUIETCOOL FULL RF COMBINATION SWEEP <<<");
-    ESP_LOGI("rf_sweep", "==================================================");
-
-    uint8_t cmd_high = 0xBF; // High Speed
-    
-    uint8_t packet_std[20] = {
-      0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
-      remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
-      remote_id[4], remote_id[5], remote_id[6],             
-      cmd_high, cmd_high, 0x00, 0x00                                            
-    };
-
-    uint32_t freqs[] = {433897000, 433920000, 433880000};
-    const char* freq_names[] = {"433.897MHz", "433.920MHz", "433.880MHz"};
-
-    int test_num = 1;
-
-    for (int f = 0; f < 3; f++) {
-      this->set_frequency(freqs[f]);
-
-      uint32_t bit_delays[] = {400, 395, 405}; // 2500 Baud URH timing +/- 1%
-      for (int d = 0; d < 3; d++) {
-        ESP_LOGI("rf_sweep", "[TEST #%d] Async GPIO Bit-Bang | Freq: %s | Delay: %dus | Bursts: 8", test_num++, freq_names[f], bit_delays[d]);
-        
-        this->write_reg(0x02, 0x2D);
-        this->write_reg(0x08, 0x32);
-        
-        for (int b = 0; b < 8; b++) {
-          this->write_strobe(0x35);
-          ets_delay_us(1000);
-          this->send_raw_bits(packet_std, 20, bit_delays[d]);
-          this->write_strobe(0x36);
-          delay(20);
-        }
-        
-        App.feed_wdt();
-        vTaskDelay(pdMS_TO_TICKS(2000));
-      }
-
-      ESP_LOGI("rf_sweep", "[TEST #%d] HW FIFO Mode | Freq: %s | PKTCTRL0: 0x00 | Bursts: 10", test_num++, freq_names[f]);
-      this->write_reg(0x02, 0x06);
-      this->write_reg(0x06, 0x14);
-      this->write_reg(0x08, 0x00);
-
-      for (int b = 0; b < 10; b++) {
-        this->write_strobe(0x36);
-        this->write_strobe(0x3B);
-        this->write_fifo(packet_std, 20);
-        this->write_strobe(0x35);
-        delay(25);
-      }
-      this->write_strobe(0x36);
       
+      // CRITICAL FIX FOR ESP32-S3: Feed Watchdog and yield CPU
       App.feed_wdt();
-      vTaskDelay(pdMS_TO_TICKS(2000));
+      vTaskDelay(pdMS_TO_TICKS(25)); 
     }
-
-    ESP_LOGI("rf_sweep", "==================================================");
-    ESP_LOGI("rf_sweep", ">>> QUIETCOOL RF SWEEP COMPLETE (%d Tests Run) <<<", test_num - 1);
-    ESP_LOGI("rf_sweep", "==================================================");
   }
 
   void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
