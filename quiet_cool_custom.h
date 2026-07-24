@@ -22,21 +22,38 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 / GPIO2
   gpio_num_t cs_pin   = GPIO_NUM_1; // D0 / GPIO1
 
-  // Matches the exact remote ID you already paired on the dev unit!
+  // Matches the exact remote ID paired on your dev unit
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
+    // 1. Force CS Pin HIGH to prevent SPI bus locks
     gpio_reset_pin(this->cs_pin);
     gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->cs_pin, 1); 
 
+    // 2. Setup GDO0 Pin for bitstream transmission
     gpio_reset_pin(this->gdo0_pin);
     gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->gdo0_pin, 0);
 
     this->spi_setup();
     delay(20);
+
+    // 3. Run full hardware SPI Diagnostics on boot
+    this->run_cc1101_diagnostics();
+
+    // 4. Initialize CC1101 registers
     this->init_cc1101();
+  }
+
+  uint8_t read_reg(uint8_t addr) {
+    this->enable();
+    gpio_set_level(this->cs_pin, 0);
+    this->write_byte(addr | 0x80); // Read bit set
+    uint8_t val = this->read_byte();
+    gpio_set_level(this->cs_pin, 1);
+    this->disable();
+    return val;
   }
 
   void write_reg(uint8_t addr, uint8_t value) {
@@ -56,11 +73,36 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->disable();
   }
 
+  void run_cc1101_diagnostics() {
+    ESP_LOGI("cc1101_diag", "--- Starting CC1101 SPI Diagnostics ---");
+
+    // Test 1: Read PARTNUM and VERSION registers
+    uint8_t partnum = this->read_reg(0x30); 
+    uint8_t version = this->read_reg(0x31);
+    
+    ESP_LOGI("cc1101_diag", "PARTNUM: 0x%02X (Expected: 0x00)", partnum);
+    ESP_LOGI("cc1101_diag", "VERSION: 0x%02X (Expected: 0x04 or 0x14)", version);
+
+    // Test 2: Read/Write loopback test on register IOCFG2 (0x00)
+    this->write_reg(0x00, 0x2A);
+    uint8_t readback = this->read_reg(0x00);
+    ESP_LOGI("cc1101_diag", "Register Write/Read Test (IOCFG2): Set 0x2A, Read back 0x%02X -> %s", 
+             readback, (readback == 0x2A) ? "PASS" : "FAIL");
+
+    // Test 3: Check MARCSTATE radio state machine register
+    this->write_strobe(0x36); // SIDLE
+    delay(2);
+    uint8_t marcstate = this->read_reg(0x35) & 0x1F;
+    ESP_LOGI("cc1101_diag", "MARCSTATE: 0x%02X (Expected IDLE: 0x01 or 0x08)", marcstate);
+
+    ESP_LOGI("cc1101_diag", "--- End CC1101 SPI Diagnostics ---");
+  }
+
   void init_cc1101() {
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // CC1101 configuration for 433.897 MHz direct mode
+    // CC1101 registers configured for 433.897 MHz direct mode
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
     this->write_reg(0x02, 0x2D); 
@@ -99,7 +141,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x26, 0x1F); 
     this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm max power)
 
-    this->write_strobe(0x36); // Enter SIDLE mode
+    this->write_strobe(0x36); // SIDLE
     ESP_LOGI("quiet_cool", "CC1101 ESP-IDF driver initialized successfully!");
   }
 
