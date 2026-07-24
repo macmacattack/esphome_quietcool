@@ -22,22 +22,19 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 / GPIO2
   gpio_num_t cs_pin   = GPIO_NUM_1; // D0 / GPIO1
 
+  // Matches the exact remote ID you already paired on the dev unit!
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
-    // Drive Chip Select HIGH to prevent SPI bus locks
     gpio_reset_pin(this->cs_pin);
     gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->cs_pin, 1); 
 
-    // Setup GDO0 Pin for raw bitstream transmission
     gpio_reset_pin(this->gdo0_pin);
     gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->gdo0_pin, 0);
 
     this->spi_setup();
-    
-    // Power-rail settling delay for CC1101 on XIAO S3
     delay(20);
     this->init_cc1101();
   }
@@ -63,7 +60,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // Write CC1101 registers for 433.897 MHz 2-FSK Direct Asynchronous Mode
+    // CC1101 configuration for 433.897 MHz direct mode
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
     this->write_reg(0x02, 0x2D); 
@@ -79,7 +76,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x0C, 0x00); 
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
-    this->write_reg(0x0F, 0x71); 
+    this->write_reg(0x0F, 0x71); // 433.897 MHz
     this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
     this->write_reg(0x12, 0x00); 
@@ -103,10 +100,9 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm max power)
 
     this->write_strobe(0x36); // Enter SIDLE mode
-    ESP_LOGI("quiet_cool", "CC1101 Native ESP-IDF driver initialized successfully!");
+    ESP_LOGI("quiet_cool", "CC1101 ESP-IDF driver initialized successfully!");
   }
 
-  // Precision 2400-baud pulse width modulation under ESP-IDF
   void send_bits_from_bytes(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
 
@@ -114,7 +110,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(417); // ~2400 Baud timing
+        ets_delay_us(417); // ~2400 Baud rate
       }
     }
 
