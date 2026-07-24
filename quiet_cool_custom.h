@@ -21,23 +21,28 @@ const uint8_t DUR_ON  = 0x0F;
 
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
-  // XIAO ESP32-S3 Pin Mapping
-  gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 Pad
-  gpio_num_t cs_pin   = GPIO_NUM_1; // D0 Pad
+  // XIAO ESP32-S3 Hardware Pin Assignments
+  gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 / GPIO2
+  gpio_num_t cs_pin   = GPIO_NUM_1; // D0 / GPIO1
 
-  // Configurable 7-byte remote ID (rrb3942 architecture)
+  // Configurable 7-byte remote ID (rrb3942 structure)
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
+    // Configure CS Pin manually for fast SPI latching
     gpio_reset_pin(this->cs_pin);
     gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->cs_pin, 1); 
 
+    // Configure GDO0 Pin for raw serial transmission
     gpio_reset_pin(this->gdo0_pin);
     gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->gdo0_pin, 0);
 
     this->spi_setup();
+    
+    // Give the CC1101 power rail a moment to stabilize on boot
+    delay(20);
     this->init_cc1101();
   }
 
@@ -62,10 +67,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // CC1101 registers configured for raw 2-FSK transmission
+    // CC1101 register initialization for direct 2-FSK transmission
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x2D); // GDO0 configured as direct serial TX input
+    this->write_reg(0x02, 0x2D); // GDO0 as serial input
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
@@ -78,10 +83,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x0C, 0x00); 
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
-    this->write_reg(0x0F, 0x71); // 433.897 MHz tuned carrier frequency
+    this->write_reg(0x0F, 0x71); // 433.897 MHz
     this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); // 2-FSK modulation
+    this->write_reg(0x12, 0x00); // 2-FSK
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
     this->write_reg(0x15, 0x25); // 10kHz deviation
@@ -99,21 +104,22 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x24, 0x2A); 
     this->write_reg(0x25, 0x00); 
     this->write_reg(0x26, 0x1F); 
-    this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm)
+    this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm max output power)
 
-    this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 Initialized with byte-array pipeline.");
+    this->write_strobe(0x36); // SIDLE mode
+    ESP_LOGI("quiet_cool", "CC1101 Native ESP32-S3 driver ready.");
   }
 
-  // Refactored byte-array transmit function
+  // Refactored byte-array transmission pipeline (rrb3942 data layout)
   void send_bits_from_bytes(const uint8_t *data, size_t len) {
+    // Disable interrupts briefly for strict 2400-baud pulse width timing
     portDISABLE_INTERRUPTS();
 
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(417); // 2400 Baud bit period
+        ets_delay_us(417); // ~2400 Baud bit period
       }
     }
 
@@ -124,7 +130,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   void transmit_command(uint8_t speed, uint8_t duration) {
     uint8_t cmd_byte = speed | duration;
 
-    // 20-byte packet buffer structure
+    // Build complete 20-byte payload in memory
     uint8_t packet[20] = {
       0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
@@ -133,11 +139,12 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Sending Byte-Array Packet with CMD 0x%02X", cmd_byte);
+    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X over CC1101...", cmd_byte);
 
+    // Repeat transmission 3 times to guarantee reception
     for (int i = 0; i < 3; i++) {
       gpio_set_level(this->gdo0_pin, 0);
-      this->write_strobe(0x35); // Enter TX
+      this->write_strobe(0x35); // Enter TX state
       
       ets_delay_us(1000); 
       
