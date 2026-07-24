@@ -5,6 +5,7 @@
 #include "esphome/components/spi/spi.h"
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
+#include "soc/gpio_struct.h"
 #include "rom/ets_sys.h"
 
 namespace esphome {
@@ -148,16 +149,12 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     for (size_t i = 0; i < len; i++) {
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
-        if ((b >> bit) & 1) {
-          GPIO.out_w1ts.val = (1ULL << this->gdo0_pin);
-        } else {
-          GPIO.out_w1tc.val = (1ULL << this->gdo0_pin);
-        }
+        gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
         ets_delay_us(416); // Direct 2400-baud pulse width
       }
     }
 
-    GPIO.out_w1tc.val = (1ULL << this->gdo0_pin);
+    gpio_set_level(this->gdo0_pin, 0);
     taskEXIT_CRITICAL(&quietcool_spinlock);
   }
 
@@ -176,7 +173,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     // Transmit 8 repeated bursts (matches ccrome burst window)
     for (int i = 0; i < 8; i++) {
-      GPIO.out_w1tc.val = (1ULL << this->gdo0_pin);
+      gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // Enter TX mode
       
       ets_delay_us(1000); 
