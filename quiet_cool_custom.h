@@ -98,35 +98,35 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // CC1101 register setup: Calibrated 433.92 MHz 2-FSK
+    // CC1101 register setup
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
     this->write_reg(0x02, 0x06); // GDO0 TX FIFO threshold
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
-    this->write_reg(0x06, 0xFF); // Packet length
+    
+    // FIX: Match exact packet length (20 bytes / 0x14)
+    this->write_reg(0x06, 0x14); 
+
     this->write_reg(0x07, 0x04); // PKTCTRL1: No address check
-    this->write_reg(0x08, 0x02); // PKTCTRL0: Fixed length, CRC disabled
+    this->write_reg(0x08, 0x00); // PKTCTRL0: Fixed length mode, CRC disabled
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
 
-    // EXACT 433.920 MHz Carrier Frequency
+    // 433.897 MHz Carrier Frequency (Matches original ccrome driver)
     this->write_reg(0x0D, 0x10); 
-    this->write_reg(0x0E, 0xB1); 
-    this->write_reg(0x0F, 0x3B); 
+    this->write_reg(0x0E, 0xB0); 
+    this->write_reg(0x0F, 0x71); 
 
     this->write_reg(0x10, 0xF6); // 2400 baud rate generator
     this->write_reg(0x11, 0x83); 
     this->write_reg(0x12, 0x00); // 2-FSK Modulation
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
-
-    // Widen FSK Frequency Deviation to 25.39 kHz
-    this->write_reg(0x15, 0x34); 
-
+    this->write_reg(0x15, 0x25); // Frequency deviation (~12 kHz)
     this->write_reg(0x16, 0x07); 
     this->write_reg(0x17, 0x30); 
     this->write_reg(0x18, 0x18); 
@@ -144,13 +144,12 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x3E, 0xC0); // Max TX power (+10 dBm)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 calibrated to 433.92 MHz (25kHz FSK Dev).");
+    ESP_LOGI("quiet_cool", "CC1101 hardware FIFO driver ready (PKTLEN=20).");
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
     uint8_t cmd_byte = speed | duration;
 
-    // 20-byte payload verified against working esp32dev log
     uint8_t packet[20] = {
       0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
@@ -159,20 +158,26 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X (12 repeated bursts)...", cmd_byte);
+    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X over CC1101 FIFO...", cmd_byte);
 
-    for (int i = 0; i < 12; i++) {
-      this->write_strobe(0x36); // SIDLE
+    for (int i = 0; i < 8; i++) {
+      this->write_strobe(0x36); // Enter SIDLE
       this->write_strobe(0x3B); // Flush TX FIFO (SFTX)
 
-      // Write 20-byte payload directly into hardware FIFO
+      // 1. Write 20-byte payload to FIFO
       this->write_fifo(packet, 20);
 
-      // Strobe STX to trigger hardware radio transmission
+      // 2. Start TX
       this->write_strobe(0x35); 
 
-      // Wait for transmission to complete
-      delay(25); 
+      // 3. Poll MARCSTATE until transmission completes (returns to IDLE or RX)
+      uint8_t timeout = 0;
+      while (((this->read_reg(0x35) & 0x1F) == 0x13 || (this->read_reg(0x35) & 0x1F) == 0x14 || (this->read_reg(0x35) & 0x1F) == 0x15) && timeout < 50) {
+        delay(1);
+        timeout++;
+      }
+
+      delay(15); 
     }
 
     this->write_strobe(0x36); // SIDLE
