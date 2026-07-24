@@ -67,9 +67,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   }
 
   void init_cc1101() {
-    this->write_strobe(0x30); // SRES Reset
+    this->write_strobe(0x30); // Reset
     delay(10);
 
+    // Direct Mode Register Configuration
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
     this->write_reg(0x02, 0x2D); // GDO0 Direct Async Output
@@ -78,19 +79,19 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x05, 0x91); 
     this->write_reg(0x06, 0xFF); 
     this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x32); // Asynchronous Serial Mode
+    this->write_reg(0x08, 0x32); // Asynchronous Serial Direct Mode
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
 
-    // 433.897 MHz
+    // 433.897 MHz Frequency
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
     this->write_reg(0x0F, 0x71); 
 
-    // 12,000 Baud Rate Generator Registers
-    this->write_reg(0x10, 0xF8); 
+    // 2,500 Baud Rate Calibration
+    this->write_reg(0x10, 0xF6); 
     this->write_reg(0x11, 0x83); 
 
     this->write_reg(0x12, 0x00); // 2-FSK
@@ -114,10 +115,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x3E, 0xC0); // PATABLE (+10dBm max power)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 ESP-IDF 12,000 Baud Driver Ready.");
+    ESP_LOGI("quiet_cool", "CC1101 Direct Async Driver Ready (2500 Baud / 400us).");
   }
 
-  // Precision 12,000-baud pulse width modulation (~83us per bit)
+  // Exact URH timing: 400us bit duration
   void send_bits_from_bytes(const uint8_t *data, size_t len) {
     portDISABLE_INTERRUPTS();
 
@@ -125,7 +126,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       uint8_t b = data[i];
       for (int bit = 7; bit >= 0; bit--) {
         gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(83); // ~12,000 Baud
+        ets_delay_us(400); // 400us per symbol (2500 baud matching URH)
       }
     }
 
@@ -144,18 +145,18 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X at 12,000 baud...", cmd_byte);
+    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X at 2500 baud (400us)...", cmd_byte);
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
       gpio_set_level(this->gdo0_pin, 0);
       this->write_strobe(0x35); // STX
       
-      ets_delay_us(500); 
+      ets_delay_us(1000); 
       
       this->send_bits_from_bytes(packet, 20);
 
       this->write_strobe(0x36); // SIDLE
-      delay(95); // 100ms interval matching working log
+      delay(25); 
     }
   }
 
