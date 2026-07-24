@@ -39,7 +39,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->spi_setup();
     delay(20);
 
-    // 3. Run full hardware SPI Diagnostics on boot
+    // 3. Run hardware SPI Diagnostics on boot
     this->run_cc1101_diagnostics();
 
     // 4. Initialize CC1101 registers
@@ -49,7 +49,11 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   uint8_t read_reg(uint8_t addr) {
     this->enable();
     gpio_set_level(this->cs_pin, 0);
-    this->write_byte(addr | 0x80); // Read bit set
+    
+    // Status registers (0x30 and above) require 0xC0 (READ | BURST) bits set
+    uint8_t header = (addr >= 0x30) ? (addr | 0xC0) : (addr | 0x80);
+    this->write_byte(header);
+    
     uint8_t val = this->read_byte();
     gpio_set_level(this->cs_pin, 1);
     this->disable();
