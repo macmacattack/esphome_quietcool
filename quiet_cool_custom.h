@@ -38,7 +38,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   uint8_t read_reg(uint8_t addr) {
     this->enable();
     gpio_set_level(this->cs_pin, 0);
-    uint8_header = (addr >= 0x30) ? (addr | 0xC0) : (addr | 0x80);
+    uint8_t header = (addr >= 0x30) ? (addr | 0xC0) : (addr | 0x80);
     this->write_byte(header);
     uint8_t val = this->read_byte();
     gpio_set_level(this->cs_pin, 1);
@@ -98,7 +98,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // CC1101 register setup: Calibrated 433.92 MHz 2-FSK (OEM Profile)
+    // CC1101 register setup: Calibrated 433.92 MHz 2-FSK
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
     this->write_reg(0x02, 0x06); // GDO0 TX FIFO threshold
@@ -113,10 +113,10 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x0B, 0x06); 
     this->write_reg(0x0C, 0x00); 
 
-    // EXACT 433.920 MHz Carrier Frequency Calibration
+    // EXACT 433.920 MHz Carrier Frequency
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB1); 
-    this->write_reg(0x0F, 0x3B); // 433.920 MHz
+    this->write_reg(0x0F, 0x3B); 
 
     this->write_reg(0x10, 0xF6); // 2400 baud rate generator
     this->write_reg(0x11, 0x83); 
@@ -124,7 +124,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
 
-    // Widen FSK Frequency Deviation to 25.39 kHz to override crystal drift
+    // Widen FSK Frequency Deviation to 25.39 kHz
     this->write_reg(0x15, 0x34); 
 
     this->write_reg(0x16, 0x07); 
@@ -161,7 +161,6 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X (12 repeated bursts)...", cmd_byte);
 
-    // Transmit 12 repeated bursts to ensure the receiver wake window catches the frame
     for (int i = 0; i < 12; i++) {
       this->write_strobe(0x36); // SIDLE
       this->write_strobe(0x3B); // Flush TX FIFO (SFTX)
