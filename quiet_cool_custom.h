@@ -71,7 +71,6 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
   }
 
   void set_frequency(uint32_t freq_hz) {
-    // 26 MHz crystal calculation
     uint32_t freq_reg = (uint32_t)(((uint64_t)freq_hz << 16) / 26000000);
     this->write_reg(0x0D, (freq_reg >> 16) & 0xFF);
     this->write_reg(0x0E, (freq_reg >> 8) & 0xFF);
@@ -124,7 +123,6 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     ESP_LOGI("quiet_cool", "CC1101 Radio Ready for Diagnostics.");
   }
 
-  // Direct software bit-banging helper
   void send_raw_bits(const uint8_t *data, size_t len, uint32_t bit_delay_us) {
     portDISABLE_INTERRUPTS();
     for (size_t i = 0; i < len; i++) {
@@ -138,15 +136,14 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     portENABLE_INTERRUPTS();
   }
 
-  // --- THE FULL RF DIAGNOSTIC SWEEP ROUTINE ---
+  // --- NON-BLOCKING WATCHDOG-SAFE RF SWEEP ---
   void run_full_rf_sweep() {
     ESP_LOGI("rf_sweep", "==================================================");
     ESP_LOGI("rf_sweep", ">>> STARTING QUIETCOOL FULL RF COMBINATION SWEEP <<<");
     ESP_LOGI("rf_sweep", "==================================================");
 
-    uint8_t cmd_high = 0xBF; // High Speed (0xB0 | 0x0F)
+    uint8_t cmd_high = 0xBF; // High Speed
     
-    // Base 20-byte payload
     uint8_t packet_std[20] = {
       0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
@@ -162,46 +159,51 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     for (int f = 0; f < 3; f++) {
       this->set_frequency(freqs[f]);
 
-      // --- TEST TYPE A: GPIO Direct Bit-Banging (Baud rate variations) ---
-      uint32_t bit_delays[] = {417, 412, 422}; // ~2400 Baud +/- 1%
+      // --- TEST TYPE A: GPIO Direct Bit-Banging ---
+      uint32_t bit_delays[] = {417, 412, 422};
       for (int d = 0; d < 3; d++) {
         ESP_LOGI("rf_sweep", "[TEST #%d] Async GPIO Bit-Bang | Freq: %s | Delay: %dus | Bursts: 8", test_num++, freq_names[f], bit_delays[d]);
         
-        this->write_reg(0x02, 0x2D); // Direct Mode Pin
+        this->write_reg(0x02, 0x2D);
         this->write_reg(0x08, 0x32);
         
         for (int b = 0; b < 8; b++) {
-          this->write_strobe(0x35); // STX
+          this->write_strobe(0x35);
           ets_delay_us(1000);
           this->send_raw_bits(packet_std, 20, bit_delays[d]);
-          this->write_strobe(0x36); // SIDLE
+          this->write_strobe(0x36);
           delay(20);
         }
-        delay(2000); // 2-second pause to monitor fan
+        
+        // Feed watchdog and yield task execution to FreeRTOS
+        App.feed_wdt();
+        vTaskDelay(pdMS_TO_TICKS(2000));
       }
 
-      // --- TEST TYPE B: Hardware FIFO Mode (Fixed Packet Length) ---
+      // --- TEST TYPE B: Hardware FIFO Mode (Fixed Length) ---
       ESP_LOGI("rf_sweep", "[TEST #%d] HW FIFO Mode | Freq: %s | PKTCTRL0: 0x00 | Bursts: 10", test_num++, freq_names[f]);
-      this->write_reg(0x02, 0x06); // TX FIFO
-      this->write_reg(0x06, 0x14); // PKTLEN = 20
-      this->write_reg(0x08, 0x00); // Fixed Length
+      this->write_reg(0x02, 0x06);
+      this->write_reg(0x06, 0x14);
+      this->write_reg(0x08, 0x00);
 
       for (int b = 0; b < 10; b++) {
         this->write_strobe(0x36);
-        this->write_strobe(0x3B); // Flush TX
+        this->write_strobe(0x3B);
         this->write_fifo(packet_std, 20);
-        this->write_strobe(0x35); // STX
+        this->write_strobe(0x35);
         delay(25);
       }
       this->write_strobe(0x36);
-      delay(2000);
+      
+      App.feed_wdt();
+      vTaskDelay(pdMS_TO_TICKS(2000));
 
       // --- TEST TYPE C: Hardware FIFO Mode (Variable Length) ---
       ESP_LOGI("rf_sweep", "[TEST #%d] HW FIFO Mode | Freq: %s | PKTCTRL0: 0x01 | Bursts: 10", test_num++, freq_names[f]);
-      this->write_reg(0x08, 0x01); // Variable Length
+      this->write_reg(0x08, 0x01);
       
       uint8_t var_packet[21];
-      var_packet[0] = 0x14; // Length byte = 20
+      var_packet[0] = 0x14;
       memcpy(&var_packet[1], packet_std, 20);
 
       for (int b = 0; b < 10; b++) {
@@ -212,10 +214,12 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
         delay(25);
       }
       this->write_strobe(0x36);
-      delay(2000);
+      
+      App.feed_wdt();
+      vTaskDelay(pdMS_TO_TICKS(2000));
     }
 
-    // --- TEST TYPE D: Extended Preamble Test ---
+    // --- TEST TYPE D: Extended Preamble ---
     ESP_LOGI("rf_sweep", "[TEST #%d] Extended Preamble (16x 0xAA) | Freq: 433.897MHz", test_num++);
     this->set_frequency(433897000);
     this->write_reg(0x02, 0x2D);
@@ -223,7 +227,7 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
 
     uint8_t long_preamble[28];
     memset(long_preamble, 0xAA, 16);
-    memcpy(&long_preamble[16], &packet_std[9], 12); // Append ID and Command
+    memcpy(&long_preamble[16], &packet_std[9], 12);
 
     for (int b = 0; b < 8; b++) {
       this->write_strobe(0x35);
