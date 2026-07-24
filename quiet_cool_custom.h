@@ -5,8 +5,6 @@
 #include "esphome/components/spi/spi.h"
 #include "esphome/core/hal.h"
 #include "driver/gpio.h"
-#include "soc/gpio_struct.h"
-#include "rom/ets_sys.h"
 
 namespace esphome {
 namespace quiet_cool {
@@ -18,31 +16,21 @@ const uint8_t SPEED_LOW    = 0x90;
 const uint8_t DUR_OFF = 0x00;
 const uint8_t DUR_ON  = 0x0F;
 
-static portMUX_TYPE quietcool_spinlock = portMUX_INITIALIZER_UNLOCKED;
-
 class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ> {
  public:
-  gpio_num_t gdo0_pin = GPIO_NUM_2; // D1 / GPIO2
-  gpio_num_t cs_pin   = GPIO_NUM_1; // D0 / GPIO1
+  gpio_num_t cs_pin = GPIO_NUM_1; // D0 / GPIO1
 
-  // Remote ID matching paired dev unit
+  // Matches the exact remote ID paired on your dev unit
   uint8_t remote_id[7] = {0x2D, 0xD4, 0x06, 0xCB, 0x00, 0xF7, 0xF2};
 
   void setup() override {
-    // 1. Configure CS Pin
     gpio_reset_pin(this->cs_pin);
     gpio_set_direction(this->cs_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(this->cs_pin, 1); 
 
-    // 2. Configure GDO0 Pin
-    gpio_reset_pin(this->gdo0_pin);
-    gpio_set_direction(this->gdo0_pin, GPIO_MODE_OUTPUT);
-    gpio_set_level(this->gdo0_pin, 0);
-
     this->spi_setup();
     delay(20);
 
-    // 3. Diagnostics & CC1101 Init
     this->run_cc1101_diagnostics();
     this->init_cc1101();
   }
@@ -75,6 +63,17 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->disable();
   }
 
+  void write_fifo(const uint8_t *data, size_t len) {
+    this->enable();
+    gpio_set_level(this->cs_pin, 0);
+    this->write_byte(0x7F); // FIFO Burst Write Address
+    for (size_t i = 0; i < len; i++) {
+      this->write_byte(data[i]);
+    }
+    gpio_set_level(this->cs_pin, 1);
+    this->disable();
+  }
+
   void run_cc1101_diagnostics() {
     ESP_LOGI("cc1101_diag", "--- Starting CC1101 SPI Diagnostics ---");
     uint8_t partnum = this->read_reg(0x30); 
@@ -99,16 +98,16 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_strobe(0x30); // SRES Reset
     delay(10);
 
-    // CC1101 register setup matching ccrome's RF configuration
+    // CC1101 FIFO packet engine registers (ccrome configuration)
     this->write_reg(0x00, 0x29); 
     this->write_reg(0x01, 0x2E); 
-    this->write_reg(0x02, 0x2D); // GDO0 Serial Data In/Out
+    this->write_reg(0x02, 0x06); // GDO0 TX FIFO threshold
     this->write_reg(0x03, 0x07); 
     this->write_reg(0x04, 0xD3); 
     this->write_reg(0x05, 0x91); 
-    this->write_reg(0x06, 0xFF); 
-    this->write_reg(0x07, 0x04); 
-    this->write_reg(0x08, 0x32); // Asynchronous Serial Mode
+    this->write_reg(0x06, 0xFF); // Packet length
+    this->write_reg(0x07, 0x04); // PKTCTRL1: No address check
+    this->write_reg(0x08, 0x02); // PKTCTRL0: Fixed length, CRC disabled
     this->write_reg(0x09, 0x00); 
     this->write_reg(0x0A, 0x00); 
     this->write_reg(0x0B, 0x06); 
@@ -116,9 +115,9 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x0D, 0x10); 
     this->write_reg(0x0E, 0xB0); 
     this->write_reg(0x0F, 0x71); // 433.897 MHz
-    this->write_reg(0x10, 0xF6); 
+    this->write_reg(0x10, 0xF6); // 2400 baud rate generator
     this->write_reg(0x11, 0x83); 
-    this->write_reg(0x12, 0x00); 
+    this->write_reg(0x12, 0x00); // 2-FSK
     this->write_reg(0x13, 0x00); 
     this->write_reg(0x14, 0xF8); 
     this->write_reg(0x15, 0x25); 
@@ -139,28 +138,13 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
     this->write_reg(0x3E, 0xC0); // Max TX power (+10 dBm)
 
     this->write_strobe(0x36); // SIDLE
-    ESP_LOGI("quiet_cool", "CC1101 ESP-IDF driver initialized successfully!");
-  }
-
-  // Fast direct bit-banging with critical section protection
-  void send_bits_from_bytes(const uint8_t *data, size_t len) {
-    taskENTER_CRITICAL(&quietcool_spinlock);
-
-    for (size_t i = 0; i < len; i++) {
-      uint8_t b = data[i];
-      for (int bit = 7; bit >= 0; bit--) {
-        gpio_set_level(this->gdo0_pin, (b >> bit) & 1);
-        ets_delay_us(416); // Direct 2400-baud pulse width
-      }
-    }
-
-    gpio_set_level(this->gdo0_pin, 0);
-    taskEXIT_CRITICAL(&quietcool_spinlock);
+    ESP_LOGI("quiet_cool", "CC1101 Hardware FIFO driver ready.");
   }
 
   void transmit_command(uint8_t speed, uint8_t duration) {
     uint8_t cmd_byte = speed | duration;
 
+    // Exact 20-byte payload verified against working esp32dev log
     uint8_t packet[20] = {
       0x15, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 
       remote_id[0], remote_id[1], remote_id[2], remote_id[3], 
@@ -169,20 +153,23 @@ class QuietCoolTransmitter : public Component, public spi::SPIDevice<spi::BIT_OR
       0x00, 0x00                                            
     };
 
-    ESP_LOGD("quiet_cool", "Transmitting CMD 0x%02X (8 bursts) under ESP-IDF...", cmd_byte);
+    ESP_LOGD("quiet_cool", "Transmitting Hardware FIFO Packet 0x%02X...", cmd_byte);
 
-    // Transmit 8 repeated bursts (matches ccrome burst window)
-    for (int i = 0; i < 8; i++) {
-      gpio_set_level(this->gdo0_pin, 0);
-      this->write_strobe(0x35); // Enter TX mode
-      
-      ets_delay_us(1000); 
-      
-      this->send_bits_from_bytes(packet, 20);
+    for (int i = 0; i < 6; i++) {
+      this->write_strobe(0x36); // SIDLE
+      this->write_strobe(0x3B); // Flush TX FIFO (SFTX)
 
-      this->write_strobe(0x36); // Return to SIDLE
-      delay(20); 
+      // Write 20-byte payload directly into hardware FIFO
+      this->write_fifo(packet, 20);
+
+      // Strobe STX to trigger hardware radio transmission
+      this->write_strobe(0x35); 
+
+      // Wait for transmission to complete
+      delay(25); 
     }
+
+    this->write_strobe(0x36); // SIDLE
   }
 
   void turn_off() { this->transmit_command(SPEED_HIGH, DUR_OFF); }
